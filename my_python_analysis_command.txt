@@ -1,0 +1,1 @@
+python nbt.py -model "C:\git\katago-b5c192nbt-1300w\b5c192nbt-s13156480-d2171154.bin.gz" -config "C:\git\KataGo\cpp\configs\analysis_example.cfg" -katago-path C:\git\KataGo\cpp\Debug\katago.exe
