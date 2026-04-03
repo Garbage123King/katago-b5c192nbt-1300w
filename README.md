@@ -2,7 +2,7 @@
 
 ```mermaid
 graph TD
-    L0_1["<table><tr><td rowspan='4'>initialConv</td><td style='font-size:10px'>进: (1, 22, 19, 19)</td></tr><tr><td style='font-size:10px'>出: (1, 192, 19, 19)</td></tr></table>"]
+    L0_1["<table><tr><td rowspan='4'>conv(kernel 192,22,3,3)</td><td style='font-size:10px'>进: (1, 22, 19, 19)</td></tr><tr><td style='font-size:10px'>出: (1, 192, 19, 19)</td></tr></table>"]
     L0_2["<table><tr><td rowspan='4'>initialMatMul</td><td style='font-size:10px'>进: (1, 192, 19, 19)</td></tr><tr><td style='font-size:10px'>出: (1, 192, 19, 19)</td></tr></table>"]
     subgraph Layer1 ["Block[0]：Nested OO"]
         direction TB
