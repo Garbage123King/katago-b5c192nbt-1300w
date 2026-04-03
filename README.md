@@ -135,3 +135,10 @@ graph TD
     L6_1 --> Layer7_1
     L6_1 --> Layer7_2
 ```
+
+
+
+
+```
+g++ -g main.cpp cnpy.cpp -o main -lz -Wl,--stack,67108864
+```
