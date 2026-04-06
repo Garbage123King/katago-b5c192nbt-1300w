@@ -375,9 +375,19 @@ void norm(const float (*input)[19][19], float (*output)[19][19], int channel, fl
       }
     }
 }
-void add(const float input[96][19][19], float output[96][19][19], float adder[96][19][19])
+void add96(const float input[96][19][19], float output[96][19][19], float adder[96][19][19])
 {
   for (int i = 0; i < 96; i++) {
+    for (int j = 0; j < 19; ++j) {
+      for (int k = 0; k < 19; ++k) {
+          output[i][j][k] = input[i][j][k] + adder[i][j][k];
+        }
+      }
+  }
+}
+void add192(const float input[192][19][19], float output[192][19][19], float adder[192][19][19])
+{
+  for (int i = 0; i < 192; i++) {
     for (int j = 0; j < 19; ++j) {
       for (int k = 0; k < 19; ++k) {
           output[i][j][k] = input[i][j][k] + adder[i][j][k];
@@ -406,7 +416,7 @@ void ordi(int board_size, float input[96][19][19], float output[96][19][19], flo
 
     conv3x3(output2, 96, output3, 96, (float (*)[3][3])kernel2);
 
-    add(input, output, output3);
+    add96(input, output, output3);
 }
 
 int main() {
@@ -711,6 +721,43 @@ int main() {
 
     printf("sumdiff: %f\n", err3((float*)output6, (const float*)expected_output6, 96, 19, 19, &maxdiff, &erri, &errj, &errk));
     printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
+
+    float output7[96][19][19];
+    float scale5[96];
+    float bias5[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale5[i] = BINS[26].floats[n];
+        bias5[i] = BINS[27].floats[n];
+        n++;
+    }
+    norm(output6, output7, 96, scale5, bias5, 19);
+    float output8[192][19][19];
+    float kernel6[192][96][1][1];
+
+    n = 0;
+    for(int l=0; l < 1; l++)       // W 先变
+        for(int k=0; k < 1; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 192; i++) 
+                {
+                    kernel6[i][j][k][l] = BINS[28].floats[n++];
+                }
+    conv1x1((float*)output7, 96, (float*)output8, 192, 19, (float*)kernel6);
+
+    float output9[192][19][19];
+    add192(output2, output9, output8);
+
+
+    output_npz = cnpy::npz_load("12_residual_block_2_output.npz");
+    arr_out0 = output_npz["trunk_output"];
+    float (*expected_output9)[19][19] = (float (*)[19][19])arr_out0.data<float>();
+
+    printf("sumdiff: %f\n", err3((float*)output9, (const float*)expected_output9, 192, 19, 19, &maxdiff, &erri, &errj, &errk));
+    printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
+
 
     return 0;
 }
