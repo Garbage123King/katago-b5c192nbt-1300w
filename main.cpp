@@ -356,6 +356,26 @@ void add_broadcast(const float (*input)[19][19], float (*output)[19][19], float 
   }
 }
 
+void norm(const float (*input)[19][19], float (*output)[19][19], int channel, float *scale, float *bias, int board_size)
+{
+    for (int i = 0; i < channel; i++) {
+      for (int j = 0; j < 19; ++j) {
+        for (int k = 0; k < 19; ++k) {
+          float x = input[i][j][k] * scale[i] + bias[i];
+          if(j >= board_size || k >= board_size)
+          {
+            // out of board, mask filter
+            output[i][j][k] = 0.0f;
+          }
+          else
+          {
+            output[i][j][k] = (x > 0.0f) ? x : 0.0f;
+          }
+        }
+      }
+    }
+}
+
 int main() {
     const char *gzfile = "b5c192nbt-s13156480-d2171154.bin.gz";
     const char *binfile = "b5c192nbt-s13156480-d2171154.bin";
@@ -516,6 +536,40 @@ int main() {
 
 
     printf("sumdiff: %f\n", err3((float*)output2, (const float*)expected_output2, 192, 19, 19, &maxdiff, &erri, &errj, &errk));
+    printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
+
+    
+    float output3[192][19][19];
+    float scale0[192];
+    float bias0[192];
+    n=0;
+
+    for(int i=0; i < 192; i++)
+    {
+        scale0[i] = BINS[3].floats[n];
+        bias0[i] = BINS[4].floats[n];
+        n++;
+    }
+    norm(output2, output3, 192, scale0, bias0, 19);
+    float output4[96][19][19];
+    float kernel1[96][192][1][1];
+
+    n = 0;
+    for(int l=0; l < 1; l++)       // W 先变
+        for(int k=0; k < 1; k++)   // H 后变
+            for(int j=0; j < 192; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel1[i][j][k][l] = BINS[5].floats[n++];
+                }
+    conv1x1((float*)output3, 192, (float*)output4, 96, 19, (float*)kernel1);
+
+
+    output_npz = cnpy::npz_load("3_residual_block_2_normactconv1_output.npz");
+    arr_out0 = output_npz["midIn"];
+    float (*expected_output4)[19][19] = (float (*)[19][19])arr_out0.data<float>();
+
+    printf("sumdiff: %f\n", err3((float*)output4, (const float*)expected_output4, 96, 19, 19, &maxdiff, &erri, &errj, &errk));
     printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
 
     return 0;
