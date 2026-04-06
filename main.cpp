@@ -375,6 +375,39 @@ void norm(const float (*input)[19][19], float (*output)[19][19], int channel, fl
       }
     }
 }
+void add(const float input[96][19][19], float output[96][19][19], float adder[96][19][19])
+{
+  for (int i = 0; i < 96; i++) {
+    for (int j = 0; j < 19; ++j) {
+      for (int k = 0; k < 19; ++k) {
+          output[i][j][k] = input[i][j][k] + adder[i][j][k];
+        }
+      }
+  }
+}
+void ordi(int board_size, float input[96][19][19], float output[96][19][19], float scale0[96], float bias0[96], float kernel1[96][96][3][3], float scale1[96], float bias1[96], float kernel2[96][96][3][3])
+{
+    float maxdiff;
+    int erri, errj, errk;
+
+    float output0[96][19][19];
+
+    norm(input, output0, 96, scale0, bias0, board_size);
+    
+    float output1[96][19][19];
+
+    conv3x3(output0, 96, output1, 96, (float (*)[3][3])kernel1);
+    
+    float output2[96][19][19];
+
+    norm(output1, output2, 96, scale1, bias1, board_size);
+
+    float output3[96][19][19];
+
+    conv3x3(output2, 96, output3, 96, (float (*)[3][3])kernel2);
+
+    add(input, output, output3);
+}
 
 int main() {
     const char *gzfile = "b5c192nbt-s13156480-d2171154.bin.gz";
@@ -570,6 +603,113 @@ int main() {
     float (*expected_output4)[19][19] = (float (*)[19][19])arr_out0.data<float>();
 
     printf("sumdiff: %f\n", err3((float*)output4, (const float*)expected_output4, 96, 19, 19, &maxdiff, &erri, &errj, &errk));
+    printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
+
+    /*  加载 block[0] - ORDI-I 的4组参数 */
+
+    float scale1[96];
+    float bias1[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale1[i] = BINS[7].floats[n];
+        bias1[i] = BINS[8].floats[n];
+        n++;
+    }
+    float kernel2[96][96][3][3];
+
+    n = 0;
+    for(int l=0; l < 3; l++)       // W 先变
+        for(int k=0; k < 3; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel2[i][j][k][l] = BINS[9].floats[n++];
+                }
+            
+    float scale2[96];
+    float bias2[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale2[i] = BINS[12].floats[n];
+        bias2[i] = BINS[13].floats[n];
+        n++;
+    }
+    float kernel3[96][96][3][3];
+
+    n = 0;
+    for(int l=0; l < 3; l++)       // W 先变
+        for(int k=0; k < 3; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel3[i][j][k][l] = BINS[14].floats[n++];
+                }
+
+    /* 加载 block[0] - ORDI-I 的4组参数 结束 */
+
+    float output5[96][19][19];
+    ordi(19, output4, output5, scale1, bias1, kernel2, scale2, bias2, kernel3);
+
+    /*  加载 block[0] - ORDI-II 的4组参数 */
+
+    float scale3[96];
+    float bias3[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale3[i] = BINS[16].floats[n];
+        bias3[i] = BINS[17].floats[n];
+        n++;
+    }
+    float kernel4[96][96][3][3];
+
+    n = 0;
+    for(int l=0; l < 3; l++)       // W 先变
+        for(int k=0; k < 3; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel4[i][j][k][l] = BINS[18].floats[n++];
+                }
+            
+    float scale4[96];
+    float bias4[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale4[i] = BINS[21].floats[n];
+        bias4[i] = BINS[22].floats[n];
+        n++;
+    }
+    float kernel5[96][96][3][3];
+
+    n = 0;
+    for(int l=0; l < 3; l++)       // W 先变
+        for(int k=0; k < 3; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel5[i][j][k][l] = BINS[23].floats[n++];
+                }
+
+    /* 加载 block[0] - ORDI-II 的4组参数 结束 */
+
+    float output6[96][19][19];
+    ordi(19, output5, output6, scale3, bias3, kernel4, scale4, bias4, kernel5);
+
+
+
+    output_npz = cnpy::npz_load("11_residual_block_2_blocks_output.npz");
+    arr_out0 = output_npz["midIn"];
+    float (*expected_output6)[19][19] = (float (*)[19][19])arr_out0.data<float>();
+
+    printf("sumdiff: %f\n", err3((float*)output6, (const float*)expected_output6, 96, 19, 19, &maxdiff, &erri, &errj, &errk));
     printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
 
     return 0;
