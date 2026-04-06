@@ -4,6 +4,9 @@
 #include <zlib.h>
 #include "cnpy.h" // 必须安装并包含 cnpy
 
+#define TRUE 1
+#define FALSE 0
+
 typedef struct {
     const char* content;
     int bin_start;
@@ -418,6 +421,425 @@ void ordi(int board_size, float input[96][19][19], float output[96][19][19], flo
 
     add96(input, output, output3);
 }
+void rowsG(float input[32][19][19], float output[96], int isValueHead, int board_size)
+{
+  float div = (float)(board_size * board_size);
+  float sqrtdiv = (float)board_size;
+  for(int I = 0; I<32; I++)
+  {
+    float s = 0.0f;
+    float max = -1.0f;
+    for(int i=0; i<19; i++)
+      for(int j=0; j<19; j++)
+      {
+        float x = input[I][i][j];
+        s += x;
+        // katago原文
+        // Init to -1.0 above and + mask - 1.0 is because it will effectively make all padded space into -1.0
+        // which is lower than the lowest value that any current activation function will produce.
+        // so the max over all valid spaces will the same as the mask over all spaces including padding
+        // We're relying on all padded space being equal to 0 because this gpool only ever follows a BN+Activate with a mask.
+        float maskVal = i<board_size && j<board_size? 1.0f : 0.0f;
+        float temp = x + (maskVal - 1.0f);
+        max = temp > max ? temp : max;
+      }
+        
+    float mean = s / div;
+    output[0 + I] = mean;
+    output[32 + I] = mean * (sqrtdiv - 14.0f) * 0.1f;
+    output[64 + I] = isValueHead? mean * ((sqrtdiv - 14.0f) * (sqrtdiv - 14.0f) * 0.01f - 0.1f) : max;
+  }
+}
+void gpool(int board_size, float input[96][19][19], float output[96][19][19], float scale0[96], float bias0[96], float kernel0[64][96][3][3], float kernel1[32][96][3][3], float scale1[32], float bias1[32], float nn[64][96], float scale2[64], float bias2[64], float kernel2[96][64][3][3])
+{
+    float maxdiff;
+    int erri, errj, errk;
+
+    float output0[96][19][19];
+
+    norm(input, output0, 96, scale0, bias0, board_size);
+
+    //从这开始分为了两支，先是regular支
+
+    float output1[64][19][19];
+
+    conv3x3(output0, 96, output1, 64, (float (*)[3][3])kernel0);
+
+    // g分支
+
+    float output2[32][19][19];
+
+    conv3x3(output0, 96, output2, 32, (float (*)[3][3])kernel1);
+
+    float output3[32][19][19];
+
+    norm(output2, output3, 32, scale1, bias1, board_size);
+    
+    float output4[96];
+    rowsG(output3, output4, FALSE, board_size);
+
+    float output5[64];
+    conv1x1((float*)output4, 96, (float*)output5, 64, 1, (float*)nn);
+
+    float output6[64][19][19];
+    add_broadcast(output1, output6, output5, 64);
+
+    // 汇聚后再来一次normconv
+    // BINS[29]全是0，跳过
+    // BINS[30]跳过
+
+    float output7[64][19][19];
+
+    norm(output6, output7, 64, scale2, bias2, board_size);
+
+    float output8[96][19][19];
+
+    conv3x3(output7, 64, output8, 96, (float (*)[3][3])kernel2);
+
+    add96(input, output, output8);
+
+}
+void OO(float input[192][19][19], float output[192][19][19], int start_index)
+{
+    
+    float output3[192][19][19];
+    float scale0[192];
+    float bias0[192];
+    int n=0;
+
+    for(int i=0; i < 192; i++)
+    {
+        scale0[i] = BINS[start_index].floats[n];
+        bias0[i] = BINS[start_index+1].floats[n];
+        n++;
+    }
+    norm(input, output3, 192, scale0, bias0, 19);
+    float output4[96][19][19];
+    float kernel1[96][192][1][1];
+
+    n = 0;
+    for(int l=0; l < 1; l++)       // W 先变
+        for(int k=0; k < 1; k++)   // H 后变
+            for(int j=0; j < 192; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel1[i][j][k][l] = BINS[start_index+2].floats[n++];
+                }
+    conv1x1((float*)output3, 192, (float*)output4, 96, 19, (float*)kernel1);
+
+    /*  加载 block[0] - ORDI-I 的4组参数 */
+
+    float scale1[96];
+    float bias1[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale1[i] = BINS[start_index+4].floats[n];
+        bias1[i] = BINS[start_index+5].floats[n];
+        n++;
+    }
+    float kernel2[96][96][3][3];
+
+    n = 0;
+    for(int l=0; l < 3; l++)       // W 先变
+        for(int k=0; k < 3; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel2[i][j][k][l] = BINS[start_index+6].floats[n++];
+                }
+            
+    float scale2[96];
+    float bias2[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale2[i] = BINS[start_index+9].floats[n];
+        bias2[i] = BINS[start_index+10].floats[n];
+        n++;
+    }
+    float kernel3[96][96][3][3];
+
+    n = 0;
+    for(int l=0; l < 3; l++)       // W 先变
+        for(int k=0; k < 3; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel3[i][j][k][l] = BINS[start_index+11].floats[n++];
+                }
+
+    /* 加载 block[0] - ORDI-I 的4组参数 结束 */
+
+    float output5[96][19][19];
+    ordi(19, output4, output5, scale1, bias1, kernel2, scale2, bias2, kernel3);
+
+    /*  加载 block[0] - ORDI-II 的4组参数 */
+
+    float scale3[96];
+    float bias3[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale3[i] = BINS[start_index+13].floats[n];
+        bias3[i] = BINS[start_index+14].floats[n];
+        n++;
+    }
+    float kernel4[96][96][3][3];
+
+    n = 0;
+    for(int l=0; l < 3; l++)       // W 先变
+        for(int k=0; k < 3; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel4[i][j][k][l] = BINS[start_index+15].floats[n++];
+                }
+            
+    float scale4[96];
+    float bias4[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale4[i] = BINS[start_index+18].floats[n];
+        bias4[i] = BINS[start_index+19].floats[n];
+        n++;
+    }
+    float kernel5[96][96][3][3];
+
+    n = 0;
+    for(int l=0; l < 3; l++)       // W 先变
+        for(int k=0; k < 3; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel5[i][j][k][l] = BINS[start_index+20].floats[n++];
+                }
+
+    /* 加载 block[0] - ORDI-II 的4组参数 结束 */
+
+    float output6[96][19][19];
+    ordi(19, output5, output6, scale3, bias3, kernel4, scale4, bias4, kernel5);
+
+    float output7[96][19][19];
+    float scale5[96];
+    float bias5[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale5[i] = BINS[start_index+23].floats[n];
+        bias5[i] = BINS[start_index+24].floats[n];
+        n++;
+    }
+    norm(output6, output7, 96, scale5, bias5, 19);
+    float output8[192][19][19];
+    float kernel6[192][96][1][1];
+
+    n = 0;
+    for(int l=0; l < 1; l++)       // W 先变
+        for(int k=0; k < 1; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 192; i++) 
+                {
+                    kernel6[i][j][k][l] = BINS[start_index+25].floats[n++];
+                }
+    conv1x1((float*)output7, 96, (float*)output8, 192, 19, (float*)kernel6);
+
+    add192(input, output, output8);
+
+}
+
+
+void GO(float input[192][19][19], float output[192][19][19], int start_index)
+{
+    
+    float output3[192][19][19];
+    float scale[192];
+    float bias[192];
+    int n=0;
+
+    for(int i=0; i < 192; i++)
+    {
+        scale[i] = BINS[start_index].floats[n];
+        bias[i] = BINS[start_index+1].floats[n];
+        n++;
+    }
+    norm(input, output3, 192, scale, bias, 19);
+    float output4[96][19][19];
+    float kernel[96][192][1][1];
+
+    n = 0;
+    for(int l=0; l < 1; l++)       // W 先变
+        for(int k=0; k < 1; k++)   // H 后变
+            for(int j=0; j < 192; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel[i][j][k][l] = BINS[start_index+2].floats[n++];
+                }
+    conv1x1((float*)output3, 192, (float*)output4, 96, 19, (float*)kernel);
+
+    /*  加载 Global 的参数 */
+
+    float scale0[96];
+    float bias0[96];
+    float kernel0[64][96][3][3];
+    float kernel1[32][96][3][3];
+    float scale1[32];
+    float bias1[32];
+    float nn[64][96];
+    float scale2[64];
+    float bias2[64];
+    float kernel2[96][64][3][3];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+      scale0[i] = BINS[start_index+4].floats[n];
+      bias0[i] = BINS[start_index+5].floats[n];
+      n++;
+    }
+
+    n=0;
+    for(int l=0; l <3; l++)
+        for(int k=0; k <3; k++)
+            for(int j=0; j <96; j++)
+                for(int i=0; i <64; i++)
+                {
+                    kernel0[i][j][k][l] = BINS[start_index+6].floats[n++];
+                }
+
+    n=0;
+    for(int l=0; l <3; l++)
+        for(int k=0; k <3; k++)
+            for(int j=0; j <96; j++)
+            for(int i=0; i <32; i++)
+            {
+                kernel1[i][j][k][l] = BINS[start_index+7].floats[n++];
+            }
+
+    n=0;
+
+    for(int i=0; i < 32; i++)
+    {
+      scale1[i] = BINS[start_index+9].floats[n];
+      bias1[i] = BINS[start_index+10].floats[n];
+      n++;
+    }
+
+    n=0;
+
+    for(int j=0; j < 96; j++)
+      for(int i=0; i < 64; i++)
+      {
+        nn[i][j] = BINS[start_index+11].floats[n];
+        n++;
+      }
+
+    n=0;
+
+    for(int i=0; i < 64; i++)
+    {
+      scale2[i] = BINS[start_index+14].floats[n];
+      bias2[i] = BINS[start_index+15].floats[n];
+      n++;
+    }
+
+    n=0;
+    for(int l=0; l <3; l++)
+        for(int k=0; k <3; k++)
+            for(int j=0; j <64; j++)
+            for(int i=0; i <96; i++)
+            {
+                kernel2[i][j][k][l] = BINS[start_index+16].floats[n++];
+            }
+
+    /* 加载 Global 的4组参数 结束 */
+
+    float output5[96][19][19];
+    gpool(19, output4, output5, scale0, bias0, kernel0, kernel1, scale1, bias1, nn, scale2, bias2, kernel2);
+
+    /*  加载 block[0] - ORDI-II 的4组参数 */
+
+    float scale3[96];
+    float bias3[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale3[i] = BINS[start_index+18].floats[n];
+        bias3[i] = BINS[start_index+19].floats[n];
+        n++;
+    }
+    float kernel4[96][96][3][3];
+
+    n = 0;
+    for(int l=0; l < 3; l++)       // W 先变
+        for(int k=0; k < 3; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel4[i][j][k][l] = BINS[start_index+20].floats[n++];
+                }
+            
+    float scale4[96];
+    float bias4[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale4[i] = BINS[start_index+23].floats[n];
+        bias4[i] = BINS[start_index+24].floats[n];
+        n++;
+    }
+    float kernel5[96][96][3][3];
+
+    n = 0;
+    for(int l=0; l < 3; l++)       // W 先变
+        for(int k=0; k < 3; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 96; i++) 
+                {
+                    kernel5[i][j][k][l] = BINS[start_index+25].floats[n++];
+                }
+
+    /* 加载 block[0] - ORDI-II 的4组参数 结束 */
+
+    float output6[96][19][19];
+    ordi(19, output5, output6, scale3, bias3, kernel4, scale4, bias4, kernel5);
+
+    float output7[96][19][19];
+    float scale5[96];
+    float bias5[96];
+    n=0;
+
+    for(int i=0; i < 96; i++)
+    {
+        scale5[i] = BINS[start_index+28].floats[n];
+        bias5[i] = BINS[start_index+29].floats[n];
+        n++;
+    }
+    norm(output6, output7, 96, scale5, bias5, 19);
+    float output8[192][19][19];
+    float kernel6[192][96][1][1];
+
+    n = 0;
+    for(int l=0; l < 1; l++)       // W 先变
+        for(int k=0; k < 1; k++)   // H 后变
+            for(int j=0; j < 96; j++)  
+                for(int i=0; i < 192; i++) 
+                {
+                    kernel6[i][j][k][l] = BINS[start_index+30].floats[n++];
+                }
+    conv1x1((float*)output7, 96, (float*)output8, 192, 19, (float*)kernel6);
+
+    add192(input, output, output8);
+
+}
 
 int main() {
     const char *gzfile = "b5c192nbt-s13156480-d2171154.bin.gz";
@@ -510,7 +932,7 @@ int main() {
     // 2. 读取预期输出（用于对比验证）
     cnpy::npz_t output_npz = cnpy::npz_load("1_initial_conv_output.npz");
     cnpy::NpyArray arr_out0 = output_npz["trunkScratch"];
-    float (*expected_output0)[19][19] = (float (*)[19][19])arr_out0.data<float>();
+    float (*expected_output)[19][19] = (float (*)[19][19])arr_out0.data<float>();
 
     printf("NPZ Loaded: Input size %zu, Output0 size %zu\n", arr_in.num_vals, arr_out0.num_vals);
 
@@ -533,7 +955,7 @@ int main() {
     float maxdiff;
     int erri, errj, errk;
 
-    printf("sumdiff: %f\n", err3((float*)output0, (const float*)expected_output0, 192, 19, 19, &maxdiff, &erri, &errj, &errk));
+    printf("sumdiff: %f\n", err3((float*)output0, (const float*)expected_output, 192, 19, 19, &maxdiff, &erri, &errj, &errk));
     printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
 
     const float inputGlobal[19] = {
@@ -575,188 +997,47 @@ int main() {
 
     output_npz = cnpy::npz_load("2_add_nc_bias_first_output.npz");
     arr_out0 = output_npz["trunkScratch"];
-    float (*expected_output2)[19][19] = (float (*)[19][19])arr_out0.data<float>();
+    expected_output = (float (*)[19][19])arr_out0.data<float>();
 
 
-    printf("sumdiff: %f\n", err3((float*)output2, (const float*)expected_output2, 192, 19, 19, &maxdiff, &erri, &errj, &errk));
+    printf("sumdiff: %f\n", err3((float*)output2, (const float*)expected_output, 192, 19, 19, &maxdiff, &erri, &errj, &errk));
     printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
 
-    
     float output3[192][19][19];
-    float scale0[192];
-    float bias0[192];
+    float output4[192][19][19];
+    float output5[192][19][19];
+    float output6[192][19][19];
+    float output7[192][19][19];
+    OO(output2, output3, 3);
+    GO(output3, output4, 30);
+    OO(output4, output5, 62);
+    GO(output5, output6, 89);
+    OO(output6, output7, 121);
+
+
+    float scale_final[192];
+    float bias_final[192];
+    float output8[192][19][19];
     n=0;
 
     for(int i=0; i < 192; i++)
     {
-        scale0[i] = BINS[3].floats[n];
-        bias0[i] = BINS[4].floats[n];
-        n++;
+      scale_final[i] = BINS[148].floats[n];
+      bias_final[i] = BINS[149].floats[n];
+      n++;
     }
-    norm(output2, output3, 192, scale0, bias0, 19);
-    float output4[96][19][19];
-    float kernel1[96][192][1][1];
 
-    n = 0;
-    for(int l=0; l < 1; l++)       // W 先变
-        for(int k=0; k < 1; k++)   // H 后变
-            for(int j=0; j < 192; j++)  
-                for(int i=0; i < 96; i++) 
-                {
-                    kernel1[i][j][k][l] = BINS[5].floats[n++];
-                }
-    conv1x1((float*)output3, 192, (float*)output4, 96, 19, (float*)kernel1);
+    norm(output7, output8, 192, scale_final, bias_final, 19);
 
-
-    output_npz = cnpy::npz_load("3_residual_block_2_normactconv1_output.npz");
-    arr_out0 = output_npz["midIn"];
-    float (*expected_output4)[19][19] = (float (*)[19][19])arr_out0.data<float>();
-
-    printf("sumdiff: %f\n", err3((float*)output4, (const float*)expected_output4, 96, 19, 19, &maxdiff, &erri, &errj, &errk));
-    printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
-
-    /*  加载 block[0] - ORDI-I 的4组参数 */
-
-    float scale1[96];
-    float bias1[96];
-    n=0;
-
-    for(int i=0; i < 96; i++)
-    {
-        scale1[i] = BINS[7].floats[n];
-        bias1[i] = BINS[8].floats[n];
-        n++;
-    }
-    float kernel2[96][96][3][3];
-
-    n = 0;
-    for(int l=0; l < 3; l++)       // W 先变
-        for(int k=0; k < 3; k++)   // H 后变
-            for(int j=0; j < 96; j++)  
-                for(int i=0; i < 96; i++) 
-                {
-                    kernel2[i][j][k][l] = BINS[9].floats[n++];
-                }
-            
-    float scale2[96];
-    float bias2[96];
-    n=0;
-
-    for(int i=0; i < 96; i++)
-    {
-        scale2[i] = BINS[12].floats[n];
-        bias2[i] = BINS[13].floats[n];
-        n++;
-    }
-    float kernel3[96][96][3][3];
-
-    n = 0;
-    for(int l=0; l < 3; l++)       // W 先变
-        for(int k=0; k < 3; k++)   // H 后变
-            for(int j=0; j < 96; j++)  
-                for(int i=0; i < 96; i++) 
-                {
-                    kernel3[i][j][k][l] = BINS[14].floats[n++];
-                }
-
-    /* 加载 block[0] - ORDI-I 的4组参数 结束 */
-
-    float output5[96][19][19];
-    ordi(19, output4, output5, scale1, bias1, kernel2, scale2, bias2, kernel3);
-
-    /*  加载 block[0] - ORDI-II 的4组参数 */
-
-    float scale3[96];
-    float bias3[96];
-    n=0;
-
-    for(int i=0; i < 96; i++)
-    {
-        scale3[i] = BINS[16].floats[n];
-        bias3[i] = BINS[17].floats[n];
-        n++;
-    }
-    float kernel4[96][96][3][3];
-
-    n = 0;
-    for(int l=0; l < 3; l++)       // W 先变
-        for(int k=0; k < 3; k++)   // H 后变
-            for(int j=0; j < 96; j++)  
-                for(int i=0; i < 96; i++) 
-                {
-                    kernel4[i][j][k][l] = BINS[18].floats[n++];
-                }
-            
-    float scale4[96];
-    float bias4[96];
-    n=0;
-
-    for(int i=0; i < 96; i++)
-    {
-        scale4[i] = BINS[21].floats[n];
-        bias4[i] = BINS[22].floats[n];
-        n++;
-    }
-    float kernel5[96][96][3][3];
-
-    n = 0;
-    for(int l=0; l < 3; l++)       // W 先变
-        for(int k=0; k < 3; k++)   // H 后变
-            for(int j=0; j < 96; j++)  
-                for(int i=0; i < 96; i++) 
-                {
-                    kernel5[i][j][k][l] = BINS[23].floats[n++];
-                }
-
-    /* 加载 block[0] - ORDI-II 的4组参数 结束 */
-
-    float output6[96][19][19];
-    ordi(19, output5, output6, scale3, bias3, kernel4, scale4, bias4, kernel5);
-
-
-
-    output_npz = cnpy::npz_load("11_residual_block_2_blocks_output.npz");
-    arr_out0 = output_npz["midIn"];
-    float (*expected_output6)[19][19] = (float (*)[19][19])arr_out0.data<float>();
-
-    printf("sumdiff: %f\n", err3((float*)output6, (const float*)expected_output6, 96, 19, 19, &maxdiff, &erri, &errj, &errk));
-    printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
-
-    float output7[96][19][19];
-    float scale5[96];
-    float bias5[96];
-    n=0;
-
-    for(int i=0; i < 96; i++)
-    {
-        scale5[i] = BINS[26].floats[n];
-        bias5[i] = BINS[27].floats[n];
-        n++;
-    }
-    norm(output6, output7, 96, scale5, bias5, 19);
-    float output8[192][19][19];
-    float kernel6[192][96][1][1];
-
-    n = 0;
-    for(int l=0; l < 1; l++)       // W 先变
-        for(int k=0; k < 1; k++)   // H 后变
-            for(int j=0; j < 96; j++)  
-                for(int i=0; i < 192; i++) 
-                {
-                    kernel6[i][j][k][l] = BINS[28].floats[n++];
-                }
-    conv1x1((float*)output7, 96, (float*)output8, 192, 19, (float*)kernel6);
-
-    float output9[192][19][19];
-    add192(output2, output9, output8);
-
-
-    output_npz = cnpy::npz_load("12_residual_block_2_output.npz");
+    output_npz = cnpy::npz_load("66_network_output.npz");
     arr_out0 = output_npz["trunk_output"];
-    float (*expected_output9)[19][19] = (float (*)[19][19])arr_out0.data<float>();
+    expected_output = (float (*)[19][19])arr_out0.data<float>();
 
-    printf("sumdiff: %f\n", err3((float*)output9, (const float*)expected_output9, 192, 19, 19, &maxdiff, &erri, &errj, &errk));
+
+    printf("sumdiff: %f\n", err3((float*)output8, (const float*)expected_output, 192, 19, 19, &maxdiff, &erri, &errj, &errk));
     printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
+
+    /* 头 */
 
 
     return 0;
