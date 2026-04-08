@@ -841,6 +841,40 @@ void GO(float input[192][19][19], float output[192][19][19], int start_index)
 
 }
 
+float err1(float *mat1, const float *mat2, int x, float *maxdiff, int *oi)
+{
+  float s = 0.0f;
+  float max_diff = -999.0f;
+  for (int i=0; i<x; i++)
+  {
+    float a = mat1[i] - mat2[i];
+    float diff;
+    if(a > 0)
+      diff = a;
+    else
+      diff = -a;
+  
+    if(diff > 0.001)
+    {
+      printf("err1 error: diff too big!! i=%d: output: %f, suppose: %f\n", i, mat1[i], mat2[i]);
+      exit(EXIT_FAILURE);
+    }
+  
+    s += diff;
+    if(diff > max_diff)
+    {
+      max_diff=diff;
+      *oi = i;
+    }
+    if(s>1000000.0f)
+    {
+      printf("warning! big number");
+    }
+  }
+  *maxdiff = max_diff;
+  return s;
+}
+
 int main() {
     const char *gzfile = "b5c192nbt-s13156480-d2171154.bin.gz";
     const char *binfile = "b5c192nbt-s13156480-d2171154.bin";
@@ -1017,7 +1051,7 @@ int main() {
 
     float scale_final[192];
     float bias_final[192];
-    float output8[192][19][19];
+    float output9[192][19][19];
     n=0;
 
     for(int i=0; i < 192; i++)
@@ -1027,17 +1061,366 @@ int main() {
       n++;
     }
 
-    norm(output7, output8, 192, scale_final, bias_final, 19);
+    norm(output7, output9, 192, scale_final, bias_final, 19);
 
     output_npz = cnpy::npz_load("66_network_output.npz");
     arr_out0 = output_npz["trunk_output"];
     expected_output = (float (*)[19][19])arr_out0.data<float>();
 
 
-    printf("sumdiff: %f\n", err3((float*)output8, (const float*)expected_output, 192, 19, 19, &maxdiff, &erri, &errj, &errk));
+    printf("sumdiff: %f\n", err3((float*)output9, (const float*)expected_output, 192, 19, 19, &maxdiff, &erri, &errj, &errk));
     printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
 
     /* 头 */
+
+    float policy[2][19][19];
+     float pass[2];
+      float value[3];
+      float scorevalue[6];
+     float ownership[19][19];
+     int board_size=19;
+    /* 以下开始各种头，policy, pass, value, scorevalue, ownership一共5个头 */
+
+    /*分支1备用*/
+    float kernel15[32][192];
+
+    n=0;
+
+    for(int j=0; j <192; j++)
+      for(int i=0; i <32; i++)
+      {
+        kernel15[i][j] = BINS[150].floats[n++];
+      }
+
+    float output10[32][19][19];
+    conv1x1((float*)output9, 192, (float*)output10, 32, 19, (float*)kernel15);
+
+    
+    output_npz = cnpy::npz_load("68_policyhead_p1conv_output.npz");
+    arr_out0 = output_npz["p1Out"];
+    expected_output = (float (*)[19][19])arr_out0.data<float>();
+
+
+    printf("sumdiff: %f\n", err3((float*)output10, (const float*)expected_output, 32, 19, 19, &maxdiff, &erri, &errj, &errk));
+    printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
+
+    /*分支2*/
+
+    float kernel16[32][192];
+
+    n=0;
+
+    for(int j=0; j <192; j++)
+      for(int i=0; i <32; i++)
+      {
+        kernel16[i][j] = BINS[151].floats[n++];
+      }
+
+    float output11[32][19][19];
+    conv1x1((float*)output9, 192, (float*)output11, 32, 19, (float*)kernel16);
+
+    float scale15[32];
+    float bias15[32];
+    float output12[32][19][19];
+    n=0;
+
+    for(int i=0; i < 32; i++)
+    {
+      scale15[i] = BINS[153].floats[n];
+      bias15[i] = BINS[154].floats[n];
+      n++;
+    }
+
+    norm(output11, output12, 32, scale15, bias15, board_size);
+
+    float output13[96];
+    rowsG(output12, output13, FALSE, board_size);
+
+
+    // 从这起开始分两个头，policy和pass
+
+    float nn2[32][96];
+    n=0;
+
+    for(int j=0; j < 96; j++)
+      for(int i=0; i < 32; i++)
+      {
+        nn2[i][j] = BINS[155].floats[n];
+        n++;
+      }
+
+    float output14[32];
+    conv1x1((float*)output13, 96, (float*)output14, 32, 1, (float*)nn2);
+
+    float output15[32][19][19];
+    add_broadcast(output10, output15, output14, 32);
+
+    // 汇聚后再来一次normconv
+
+    float scale16[32];
+    float bias16[32];
+    n=0;
+
+    for(int i=0; i < 32; i++)
+    {
+      scale16[i] = BINS[157].floats[n];
+      bias16[i] = BINS[158].floats[n];
+      n++;
+    }
+    float output16[32][19][19];
+
+    norm(output15, output16, 32, scale16, bias16, board_size);
+
+    float kernel17[2][32];
+
+    n=0;
+
+    for(int j=0; j <32; j++)
+      for(int i=0; i <2; i++)
+      {
+        kernel17[i][j] = BINS[159].floats[n++];
+      }
+
+    conv1x1((float*)output16, 32, (float*)policy, 2, 19, (float*)kernel17);
+
+
+    printf("check if policy is right\n");
+    output_npz = cnpy::npz_load("75_policyhead_policy_output.npz");
+    arr_out0 = output_npz["policy"];
+    expected_output = (float (*)[19][19])arr_out0.data<float>();
+
+
+    printf("sumdiff: %f\n", err3((float*)policy, (const float*)expected_output, 2, 19, 19, &maxdiff, &erri, &errj, &errk));
+    printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
+
+
+    float nn3[32][96];
+    n=0;
+
+    for(int j=0; j < 96; j++)
+      for(int i=0; i < 32; i++)
+      {
+        nn3[i][j] = BINS[160].floats[n];
+        n++;
+      }
+
+    float output18[32];
+    conv1x1((float*)output13, 96, (float*)output18, 32, 1, (float*)nn3);
+
+    float adder0[32];
+    n=0;
+    for(int i=0; i < 32; i++)
+    {
+      adder0[i] = BINS[161].floats[n];
+      n++;
+    }
+    float output19[32];
+    // 加Bias
+    for(int i=0; i < 32; i++)
+    {
+      output19[i] = output18[i] + adder0[i];
+    }
+    // 纯relu
+    for(int i=0; i < 32; i++)
+    {
+      output19[i] = output19[i] > 0 ? output19[i] : 0.0f;
+    }
+    //norm
+    float mult[2][32];
+    n=0;
+
+    for(int j=0; j < 32; j++)
+      for(int i=0; i < 2; i++)
+      {
+        mult[i][j] = BINS[162].floats[n];
+        n++;
+      }
+    
+    for(int I=0; I < 2; I++)
+    {
+      float s = 0.0f;
+      for(int i=0; i < 32; i++)
+      {
+        s += mult[I][i] * output19[i];
+      }
+      pass[I] = s;
+    }
+
+    printf("check if pass is right\n");
+    output_npz = cnpy::npz_load("79_policyhead_policy_pass_output.npz");
+    arr_out0 = output_npz["policyPass"];
+    float *expected_output_1dim = (float *)arr_out0.data<float>();
+
+    printf("sumdiff: %f\n", err1((float*)pass, (const float*)expected_output_1dim, 2, &maxdiff, &erri));
+    printf("maxdiff: %f, %d\n", maxdiff, erri);
+
+    /* Value 头*/
+    //先Conv
+    float kernel18[32][192];
+
+    n=0;
+
+    for(int j=0; j <192; j++)
+      for(int i=0; i <32; i++)
+      {
+        kernel18[i][j] = BINS[163].floats[n++];
+      }
+
+    float output21[32][19][19];
+    conv1x1((float*)output9, 192, (float*)output21, 32, 19, (float*)kernel18);
+
+    //norm
+    float scale17[32];
+    float bias17[32];
+    float output22[32][19][19];
+    n=0;
+
+    for(int i=0; i < 32; i++)
+    {
+      scale17[i] = BINS[165].floats[n];
+      bias17[i] = BINS[166].floats[n];
+      n++;
+    }
+
+    norm(output21, output22, 32, scale17, bias17, board_size);
+
+    //ownership在此分出
+
+    float output23[96];
+    rowsG(output22, output23, TRUE, board_size);
+
+    //mult
+    float nn4[80][96];
+    n=0;
+
+    for(int j=0; j < 96; j++)
+      for(int i=0; i < 80; i++) /* 这里是80不是64*/
+      {
+        nn4[i][j] = BINS[167].floats[n];
+        n++;
+      }
+
+    float output24[80];
+    conv1x1((float*)output23, 96, (float*)output24, 80, 1, (float*)nn4);
+
+    float adder1[80];
+    n=0;
+    for(int i=0; i < 80; i++)
+    {
+      adder1[i] = BINS[168].floats[n];
+      n++;
+    }
+    float output25[80];
+    // 加Bias
+    for(int i=0; i < 80; i++)
+    {
+      output25[i] = output24[i] + adder1[i];
+    }
+    // 纯relu
+    for(int i=0; i < 80; i++)
+    {
+      output25[i] = output25[i] > 0 ? output25[i] : 0.0f;
+    }
+
+    //分出分支value和scorevalue
+
+    /* value分支 */
+    // mult
+    float nn5[3][80];
+    n=0;
+
+    for(int j=0; j < 80; j++)
+      for(int i=0; i < 3; i++)
+      {
+        nn5[i][j] = BINS[169].floats[n];
+        n++;
+      }
+
+    float output26[3];
+    conv1x1((float*)output25, 80, (float*)output26, 3, 1, (float*)nn5);
+
+    float adder2[3];
+    n=0;
+    for(int i=0; i < 3; i++)
+    {
+      adder2[i] = BINS[170].floats[n];
+      n++;
+    }
+
+    // 加Bias
+    for(int i=0; i < 3; i++)
+    {
+      value[i] = output26[i] + adder2[i];
+    }
+
+    printf("check if value is right\n");
+    output_npz = cnpy::npz_load("87_valuehead_value_output.npz");
+    arr_out0 = output_npz["value"];
+    float* expected_value = (float*)arr_out0.data<float>();
+
+
+    printf("sumdiff: %f\n", err1((float*)value, (const float*)expected_value, 3, &maxdiff, &erri));
+    printf("maxdiff: %f, %d\n", maxdiff, erri);
+
+    /* scorevalue分支 */
+    float nn6[6][80];
+    n=0;
+
+    for(int j=0; j < 80; j++)
+      for(int i=0; i < 6; i++)
+      {
+        nn6[i][j] = BINS[171].floats[n];
+        n++;
+      }
+    
+    float output28[6];
+    conv1x1((float*)output25, 80, (float*)output28, 6, 1, (float*)nn6);
+
+    float adder3[6];
+    n=0;
+    for(int i=0; i < 6; i++)
+    {
+      adder3[i] = BINS[172].floats[n];
+      n++;
+    }
+    // 加Bias
+    for(int i=0; i < 6; i++)
+    {
+      scorevalue[i] = output28[i] + adder3[i];
+    }
+
+    printf("check if scorevalue is right\n");
+    output_npz = cnpy::npz_load("88_valuehead_scorevalue_output.npz");
+    arr_out0 = output_npz["scoreValue"];
+    float* expected_scorevalue = (float*)arr_out0.data<float>();
+
+
+    printf("sumdiff: %f\n", err1((float*)scorevalue, (const float*)expected_scorevalue, 6, &maxdiff, &erri));
+    printf("maxdiff: %f, %d\n", maxdiff, erri);
+
+
+    //conv
+
+    // ownership
+    float kernel19[32];
+
+    n=0;
+
+    for(int i=0; i <32; i++)
+    {
+      kernel19[i] = BINS[173].floats[n++];
+    }
+
+    conv1x1((float*)output22, 32, (float*)ownership, 1, 19, (float*)kernel19);
+
+    printf("check if ownership is right\n");
+    output_npz = cnpy::npz_load("89_valuehead_ownership_output.npz");
+    arr_out0 = output_npz["ownership"];
+    expected_output = (float (*)[19][19])arr_out0.data<float>();
+
+
+    printf("sumdiff: %f\n", err3((float*)ownership, (const float*)expected_output, 1, 19, 19, &maxdiff, &erri, &errj, &errk));
+    printf("maxdiff: %f, %d, %d, %d\n", maxdiff, erri, errj, errk);
 
 
     return 0;
